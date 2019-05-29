@@ -23,6 +23,8 @@ anchor_1: &defaults
   working_directory: ~/ng
   docker:
     - image: *default_docker_image
+anchor_win_1: &defaults_win
+  working_directory: ~/ng
 
 # After checkout, rebase on top of target branch.
 anchor_2: &post_checkout
@@ -47,8 +49,11 @@ anchor_3: &restore_cache
 anchor_4: &attach_options
   at: .
 
+orbs:
+  win: sandbox/windows-tools@dev:preview
+
 # Job definitions
-version: 2
+version: 2.1
 jobs:
   install:
     <<: *defaults
@@ -114,7 +119,7 @@ jobs:
       - run: PATH=~/.npm-global/bin:$PATH xvfb-run -a node ./tests/legacy-cli/run_e2e --nb-shards=${CIRCLE_NODE_TOTAL} --shard=${CIRCLE_NODE_INDEX}
       - store_artifacts:
           path: /tmp/dist
-          destination: cli/new-production
+          destination: cli/new-production   
 
   e2e-cli-node-12:
     <<: *defaults
@@ -201,70 +206,100 @@ jobs:
           name: Deployment to NPM
           command: |
             npm run admin -- publish --verbose
+  
+  # Windows notes:
+  # - tabbing/up/down in ssh sessions doesn't seem to work well.
+  # - see path with `echo $Env:Path`
+  test-win:
+    <<: *defaults_win
+    executor: win/preview-default
+    # Windows executors need pipelines, 
+    steps:
+      # Can't use workspace from linux directly, "Error extracting tarball"
+      # https://circleci.com/gh/angular/angular-cli/61500
+      # - attach_workspace: *attach_options
+      - checkout
+      # It's a bash script, won't work. Can fix.
+      # - *post_checkout
+      # No cache found, but I'm pretty sure it should. Maybe it's a file endings thing.
+      # Both builds below have the same yarn.lock, but different checksums
+      # win https://circleci.com/gh/angular/angular-cli/61502
+      # linux https://circleci.com/gh/angular/angular-cli/61493
+      - *restore_cache
+      # Need to install node and yarn before, as the base windows image doesn't have anything.
+      - run: choco install nodejs
+      - run: choco install yarn
+      # Refresh the shell to get node/yarn, choco tells you to do so because the path changed.
+      - run: refreshenv
+      # But that doesn't seem to work. Maybe it's because CircleCI uses runs commands 
+      # via `#!powershell.exe -NoProfile -ExecutionPolicy Bypass`.
+      # Add paths for nodejs and yarn manually.
+      # Now we have to use a multi-line command to keep the vars.
+      # This is bad because multi-line commands don't fail when a step fails.
+      # I see in the CircleCI job config the keys added to this config item, one of which is
+      # the shell. Maybe I can change that manually to address the path issues.
+      - run: |
+          $Env:path += ";C:\Program Files\nodejs\;C:\Program Files (x86)\Yarn\bin\;"
+          yarn install --frozen-lockfile  
+          npm run test -- --full                    
 
 workflows:
   version: 2
   default_workflow:
     jobs:
-      - install
-      - lint:
-          requires:
-            - install
-      - validate:
-          requires:
-            - install
-      - build:
-          requires:
-            - install
-          filters:
-            branches:
-              ignore:
-              - /docs-preview/
-      - build-bazel:
-          requires:
-            - build
-      - test:
-          requires:
-            - build
-      - test-large:
-          requires:
-            - build
-      - e2e-cli:
-          requires:
-            - build
-      - e2e-cli-node-12:
-          requires:
-            - build
-      - e2e-cli-ivy:
-          requires:
-            - build            
-      - snapshot_publish_docs:
-          requires:
-          - install
-          filters:
-            branches:
-              only:
-              - /docs-preview/
-      - e2e-cli-ng-snapshots:
-          requires:
-            - build
-      - snapshot_publish:
-          requires:
-            - test
-            - build
-            - e2e-cli
-          filters:
-            branches:
-              ignore:
-                - /pull\/.*/
-      - publish:
-          requires:
-            - test
-            - build
-            - e2e-cli
-            - snapshot_publish
-          filters:
-            tags:
-              only: /^v\d+/
-            branches:
-              ignore: /.*/
+      - test-win
+      # - install
+      # - lint:
+      #     requires:
+      #       - install
+      # - validate:
+      #     requires:
+      #       - install
+      # - build:
+      #     requires:
+      #       - install
+      #     filters:
+      #       branches:
+      #         ignore:
+      #         - /docs-preview/
+      # - build-bazel:
+      #     requires:
+      #       - build
+      # - test:
+      #     requires:
+      #       - build
+      # - test-large:
+      #     requires:
+      #       - build
+      # - e2e-cli:
+      #     requires:
+      #       - build
+      # - e2e-cli-node-12:
+      #     requires:
+      #       - build
+      # - e2e-cli-ivy:
+      #     requires:
+      #       - build            
+      # - e2e-cli-ng-snapshots:
+      #     requires:
+      #       - build
+      # - snapshot_publish:
+      #     requires:
+      #       - test
+      #       - build
+      #       - e2e-cli
+      #     filters:
+      #       branches:
+      #         ignore:
+      #           - /pull\/.*/
+      # - publish:
+      #     requires:
+      #       - test
+      #       - build
+      #       - e2e-cli
+      #       - snapshot_publish
+      #     filters:
+      #       tags:
+      #         only: /^v\d+/
+      #       branches:
+      #         ignore: /.*/
